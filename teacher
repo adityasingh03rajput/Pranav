@@ -4,86 +4,109 @@ import socket
 import json
 import threading
 
-# Server configuration - MUST UPDATE THIS
-HOST = "192.168.1.10"  # Replace with actual server LOCAL IP if on same network
-PORT = 65432
-
 class TeacherDashboard:
     def __init__(self, root):
         self.root = root
         self.root.title("Teacher Dashboard")
-        self.root.geometry("800x600")
-        
         self.setup_ui()
         self.connect_to_server()
         
     def setup_ui(self):
+        self.root.geometry("800x600")
+        
+        # Connection status frame
+        self.status_frame = tk.Frame(self.root)
+        self.status_frame.pack(pady=10)
+        
+        self.status_label = tk.Label(self.status_frame, text="Connecting to server...", fg="blue")
+        self.status_label.pack(side=tk.LEFT)
+        
+        self.ip_label = tk.Label(self.status_frame, text=f"Trying to connect to: {HOST}:{PORT}")
+        self.ip_label.pack(side=tk.LEFT, padx=20)
+        
+        # Treeview for student data
         self.tree = ttk.Treeview(self.root, columns=("Student", "Status", "Left Time"), show="headings")
         self.tree.heading("Student", text="Student")
         self.tree.heading("Status", text="Status")
         self.tree.heading("Left Time", text="Left Time")
         self.tree.pack(fill="both", expand=True, padx=10, pady=10)
         
-        self.status_label = tk.Label(self.root, text="Connecting to server...", fg="blue")
-        self.status_label.pack(pady=5)
+        # Buttons
+        btn_frame = tk.Frame(self.root)
+        btn_frame.pack(pady=10)
         
-        tk.Button(
-            self.root, 
-            text="Refresh", 
-            command=self.refresh_data,
-            font=("Arial", 12)
-        ).pack(pady=10)
+        self.refresh_btn = tk.Button(btn_frame, text="Refresh", command=self.refresh_data, state=tk.DISABLED)
+        self.refresh_btn.pack(side=tk.LEFT, padx=5)
         
+        self.retry_btn = tk.Button(btn_frame, text="Retry Connection", command=self.retry_connection)
+        self.retry_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
     def connect_to_server(self):
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.settimeout(5)  # Set connection timeout to 5 seconds
-        
         try:
-            self.client_socket.connect((HOST, PORT))
-            self.status_label.config(text="Connected to server", fg="green")
-            self.send_data("login", "teacher", "teacher")
-            threading.Thread(target=self.receive_updates, daemon=True).start()
-        except socket.timeout:
-            self.status_label.config(text="Connection timed out - server not responding", fg="red")
-            messagebox.showerror("Connection Error", 
-                               f"Could not connect to server at {HOST}:{PORT}\n"
-                               "1. Make sure server is running\n"
-                               "2. Verify IP address is correct\n"
-                               "3. Check network connection")
-        except ConnectionRefusedError:
-            self.status_label.config(text="Connection refused - server may not be running", fg="red")
-            messagebox.showerror("Connection Error", "Server actively refused the connection")
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.settimeout(5)  # 5 second timeout
+            
+            try:
+                self.client_socket.connect((HOST, PORT))
+                self.status_label.config(text="Connected to server", fg="green")
+                self.refresh_btn.config(state=tk.NORMAL)
+                self.send_data("login", "teacher", "teacher")
+                threading.Thread(target=self.receive_updates, daemon=True).start()
+            except socket.timeout:
+                self.handle_connection_error("Connection timed out - server not responding")
+            except ConnectionRefusedError:
+                self.handle_connection_error("Connection refused - server may not be running")
+            except Exception as e:
+                self.handle_connection_error(f"Connection failed: {str(e)}")
         except Exception as e:
-            self.status_label.config(text=f"Connection failed: {str(e)}", fg="red")
-            messagebox.showerror("Connection Error", f"Failed to connect: {e}")
+            self.handle_connection_error(f"Socket creation failed: {str(e)}")
+
+    def handle_connection_error(self, message):
+        self.status_label.config(text=message, fg="red")
+        self.refresh_btn.config(state=tk.DISABLED)
+        messagebox.showerror("Connection Error", 
+                           f"Could not connect to server at {HOST}:{PORT}\n\n"
+                           "Possible solutions:\n"
+                           "1. Make sure server.py is running on the server machine\n"
+                           "2. Verify the IP address is correct\n"
+                           "3. Check both machines are on the same network\n"
+                           "4. Disable firewalls temporarily to test")
+
+    def retry_connection(self):
+        self.status_label.config(text="Retrying connection...", fg="blue")
+        self.connect_to_server()
 
     def send_data(self, action, username=None, status=None):
         try:
             data = {"action": action, "username": username, "status": status}
             self.client_socket.send(json.dumps(data).encode("utf-8"))
-        except (ConnectionError, OSError) as e:
-            messagebox.showerror("Connection Error", f"Failed to send data: {e}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send data: {e}")
 
     def receive_updates(self):
         while True:
             try:
                 data = self.client_socket.recv(1024)
                 if not data:
+                    self.root.after(0, self.handle_connection_error, "Server disconnected")
                     break
                     
-                message = json.loads(data.decode("utf-8"))
-                if message.get("action") == "update":
-                    self.root.after(0, self.update_table, message.get("data", {}))
+                try:
+                    message = json.loads(data.decode("utf-8"))
+                    if message.get("action") == "update":
+                        self.root.after(0, self.update_table, message.get("data", {}))
+                except json.JSONDecodeError:
+                    print("Received invalid data from server")
                     
-            except json.JSONDecodeError:
-                print("Received invalid JSON data")
             except ConnectionResetError:
-                self.root.after(0, lambda: messagebox.showerror("Connection Lost", "Server connection was reset"))
+                self.root.after(0, self.handle_connection_error, "Server connection reset")
                 break
             except Exception as e:
-                print(f"Error receiving updates: {e}")
+                print(f"Error in receive_updates: {e}")
                 break
-                
+
     def update_table(self, data):
         for row in self.tree.get_children():
             self.tree.delete(row)
@@ -92,7 +115,7 @@ class TeacherDashboard:
             status = info.get("status", "absent").capitalize()
             left_time = info.get("left_time", "")
             self.tree.insert("", "end", values=(student, status, left_time))
-            
+
     def refresh_data(self):
         self.send_data("refresh")
         
@@ -104,8 +127,11 @@ class TeacherDashboard:
             pass
         self.root.destroy()
 
+# Server configuration - MUST UPDATE THIS
+HOST = "192.168.1.10"  # Replace with actual server IP
+PORT = 65432
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = TeacherDashboard(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
