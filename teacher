@@ -4,7 +4,7 @@ import socket
 import json
 import threading
 
-HOST = "192.168.115.174"  # Server IP
+HOST = "182.70.217.233"  # Replace with your server's public IP or domain
 PORT = 65432
 
 class TeacherDashboard:
