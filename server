@@ -1,0 +1,138 @@
+from flask import Flask, request, jsonify
+import time
+import socket
+import threading
+import json
+from collections import defaultdict
+from datetime import datetime
+
+app = Flask(__name__)
+
+# Data storage
+users = {}  # username: password
+attendance = defaultdict(dict)  # username: {status: "present/absent", last_seen: timestamp}
+connected_clients = {}  # addr: (socket, role, username)
+pending_alerts = {}  # ip: message
+
+def load_users():
+    try:
+        with open("users.json", "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_users():
+    with open("users.json", "w") as f:
+        json.dump(users, f, indent=4)
+
+def handle_client(client_socket, addr):
+    print(f"Connection from {addr}")
+    try:
+        while True:
+            data = client_socket.recv(1024).decode('utf-8')
+            if not data:
+                break
+            
+            try:
+                message = json.loads(data)
+                action = message.get("action")
+                username = message.get("username")
+                status = message.get("status")
+
+                if action == "login":
+                    role = status  # "student" or "teacher"
+                    connected_clients[addr] = (client_socket, role, username)
+                    
+                    if role == "student":
+                        # Mark student as present on login
+                        attendance[username] = {
+                            "status": "present",
+                            "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                    
+                    broadcast_attendance_update()
+                
+                elif action == "wifi_disconnected" and username:
+                    attendance[username] = {
+                        "status": "absent",
+                        "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    broadcast_attendance_update()
+                
+                elif action == "wifi_reconnected" and username:
+                    attendance[username] = {
+                        "status": "present",
+                        "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    broadcast_attendance_update()
+                
+                elif action == "signup" and username:
+                    password = message.get("password")
+                    if username not in users:
+                        users[username] = password
+                        save_users()
+                        client_socket.send(json.dumps({
+                            "status": "signup_success"
+                        }).encode('utf-8'))
+                    else:
+                        client_socket.send(json.dumps({
+                            "error": "username_exists"
+                        }).encode('utf-8'))
+
+            except json.JSONDecodeError:
+                print(f"Invalid JSON from {addr}")
+
+    except ConnectionResetError:
+        print(f"Client {addr} disconnected")
+        # Mark student as absent if they disconnect
+        if addr in connected_clients:
+            _, role, username = connected_clients[addr]
+            if role == "student":
+                attendance[username] = {
+                    "status": "absent",
+                    "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                broadcast_attendance_update()
+            del connected_clients[addr]
+    finally:
+        client_socket.close()
+
+def broadcast_attendance_update():
+    """Send updated attendance to all connected teachers"""
+    update_message = json.dumps({
+        "action": "update_attendance",
+        "data": attendance
+    }).encode('utf-8')
+    
+    for addr, (sock, role, _) in connected_clients.items():
+        if role == "teacher":
+            try:
+                sock.send(update_message)
+            except:
+                pass  # Skip disconnected clients
+
+def start_socket_server():
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(('0.0.0.0', 65432))
+    server.listen(5)
+    print("Socket server listening on port 65432")
+    
+    while True:
+        client_sock, addr = server.accept()
+        client_thread = threading.Thread(
+            target=handle_client,
+            args=(client_sock, addr)
+        )
+        client_thread.daemon = True
+        client_thread.start()
+
+# Start socket server in background
+socket_thread = threading.Thread(target=start_socket_server)
+socket_thread.daemon = True
+socket_thread.start()
+
+# Load existing users
+users = load_users()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=20074)
