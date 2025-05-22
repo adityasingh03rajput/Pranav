@@ -1,0 +1,101 @@
+
+import tkinter as tk
+from tkinter import ttk
+import socket
+import json
+import threading
+from datetime import datetime
+
+SERVER_IP = "YOUR_SERVER_PUBLIC_IP"  # Change this
+SERVER_PORT = 65432
+
+class TeacherDashboard:
+    def __init__(self):
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.connect_to_server()
+        self.setup_gui()
+    
+    def connect_to_server(self):
+        try:
+            self.client_socket.connect((SERVER_IP, SERVER_PORT))
+            self.send_data("login", "teacher", "teacher")
+            threading.Thread(target=self.receive_messages, daemon=True).start()
+        except ConnectionError as e:
+            tk.messagebox.showerror("Connection Error", f"Failed to connect to server: {e}")
+            exit()
+
+    def send_data(self, action, username=None, status=None):
+        try:
+            data = {"action": action, "username": username, "status": status}
+            self.client_socket.send(json.dumps(data).encode("utf-8"))
+        except ConnectionError as e:
+            tk.messagebox.showerror("Connection Error", f"Failed to send data: {e}")
+
+    def update_table(self, data):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        
+        for student, info in data.items():
+            status = "Present" if info.get("status") == "present" else "Absent"
+            last_seen = info.get("last_seen", "Unknown")
+            
+            # Color coding
+            tag = "present" if status == "Present" else "absent"
+            
+            self.tree.insert("", "end", values=(student, status, last_seen), tags=(tag,))
+
+    def setup_gui(self):
+        self.root = tk.Tk()
+        self.root.title("Teacher Dashboard - Real-time Attendance")
+        self.root.geometry("800x500")
+        
+        # Configure treeview style
+        style = ttk.Style()
+        style.configure("Treeview", rowheight=25)
+        style.map("Treeview", background=[("selected", "#347083")])
+        
+        # Create treeview with tags
+        self.tree = ttk.Treeview(self.root, columns=("Student", "Status", "Last Seen"), show="headings")
+        self.tree.heading("Student", text="Student")
+        self.tree.heading("Status", text="Status")
+        self.tree.heading("Last Seen", text="Last Seen")
+        self.tree.column("Student", width=200)
+        self.tree.column("Status", width=150)
+        self.tree.column("Last Seen", width=250)
+        
+        # Configure tags for color coding
+        self.tree.tag_configure("present", background="#d4edda")
+        self.tree.tag_configure("absent", background="#f8d7da")
+        
+        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Refresh button
+        refresh_btn = tk.Button(self.root, text="Refresh", command=self.refresh)
+        refresh_btn.pack(pady=5)
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.mainloop()
+
+    def refresh(self):
+        self.send_data("request_update", "teacher", "teacher")
+
+    def receive_messages(self):
+        while True:
+            try:
+                data = self.client_socket.recv(4096).decode("utf-8")
+                if not data:
+                    break
+                
+                message = json.loads(data)
+                if message.get("action") == "update_attendance":
+                    self.root.after(0, self.update_table, message.get("data", {}))
+            
+            except (json.JSONDecodeError, ConnectionError):
+                break
+
+    def on_closing(self):
+        self.client_socket.close()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    TeacherDashboard()
