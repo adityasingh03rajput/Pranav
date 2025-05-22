@@ -1,11 +1,11 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import socket
 import json
 import threading
 
-# Server configuration - UPDATE THIS TO YOUR SERVER'S PUBLIC IP
-HOST = "192.168.1.10"  # Replace with actual server IP
+# Server configuration - MUST UPDATE THIS
+HOST = "192.168.1.10"  # Replace with actual server LOCAL IP if on same network
 PORT = 65432
 
 class TeacherDashboard:
@@ -24,6 +24,9 @@ class TeacherDashboard:
         self.tree.heading("Left Time", text="Left Time")
         self.tree.pack(fill="both", expand=True, padx=10, pady=10)
         
+        self.status_label = tk.Label(self.root, text="Connecting to server...", fg="blue")
+        self.status_label.pack(pady=5)
+        
         tk.Button(
             self.root, 
             text="Refresh", 
@@ -33,32 +36,50 @@ class TeacherDashboard:
         
     def connect_to_server(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client_socket.settimeout(5)  # Set connection timeout to 5 seconds
+        
         try:
             self.client_socket.connect((HOST, PORT))
+            self.status_label.config(text="Connected to server", fg="green")
             self.send_data("login", "teacher", "teacher")
             threading.Thread(target=self.receive_updates, daemon=True).start()
+        except socket.timeout:
+            self.status_label.config(text="Connection timed out - server not responding", fg="red")
+            messagebox.showerror("Connection Error", 
+                               f"Could not connect to server at {HOST}:{PORT}\n"
+                               "1. Make sure server is running\n"
+                               "2. Verify IP address is correct\n"
+                               "3. Check network connection")
         except ConnectionRefusedError:
-            tk.messagebox.showerror("Connection Error", "Failed to connect to server. Make sure server is running.")
-            self.root.destroy()
+            self.status_label.config(text="Connection refused - server may not be running", fg="red")
+            messagebox.showerror("Connection Error", "Server actively refused the connection")
+        except Exception as e:
+            self.status_label.config(text=f"Connection failed: {str(e)}", fg="red")
+            messagebox.showerror("Connection Error", f"Failed to connect: {e}")
 
     def send_data(self, action, username=None, status=None):
         try:
             data = {"action": action, "username": username, "status": status}
             self.client_socket.send(json.dumps(data).encode("utf-8"))
         except (ConnectionError, OSError) as e:
-            tk.messagebox.showerror("Connection Error", f"Failed to send data: {e}")
+            messagebox.showerror("Connection Error", f"Failed to send data: {e}")
 
     def receive_updates(self):
         while True:
             try:
-                data = self.client_socket.recv(1024).decode("utf-8")
+                data = self.client_socket.recv(1024)
                 if not data:
                     break
                     
-                message = json.loads(data)
+                message = json.loads(data.decode("utf-8"))
                 if message.get("action") == "update":
                     self.root.after(0, self.update_table, message.get("data", {}))
                     
+            except json.JSONDecodeError:
+                print("Received invalid JSON data")
+            except ConnectionResetError:
+                self.root.after(0, lambda: messagebox.showerror("Connection Lost", "Server connection was reset"))
+                break
             except Exception as e:
                 print(f"Error receiving updates: {e}")
                 break
@@ -77,7 +98,8 @@ class TeacherDashboard:
         
     def on_closing(self):
         try:
-            self.client_socket.close()
+            if hasattr(self, 'client_socket'):
+                self.client_socket.close()
         except:
             pass
         self.root.destroy()
