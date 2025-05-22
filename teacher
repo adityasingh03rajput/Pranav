@@ -4,7 +4,8 @@ import socket
 import json
 import threading
 
-HOST = "182.70.217.233"  # Replace with your server's public IP or domain
+# Server configuration - UPDATE THIS TO YOUR SERVER'S PUBLIC IP
+HOST = "192.168.1.10"  # Replace with actual server IP
 PORT = 65432
 
 class TeacherDashboard:
@@ -21,9 +22,6 @@ class TeacherDashboard:
         self.tree.heading("Student", text="Student")
         self.tree.heading("Status", text="Status")
         self.tree.heading("Left Time", text="Left Time")
-        self.tree.column("Student", width=200)
-        self.tree.column("Status", width=150)
-        self.tree.column("Left Time", width=200)
         self.tree.pack(fill="both", expand=True, padx=10, pady=10)
         
         tk.Button(
@@ -35,15 +33,21 @@ class TeacherDashboard:
         
     def connect_to_server(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.connect((HOST, PORT))
-        self.send_data("login", "teacher", "teacher")
-        
-        threading.Thread(target=self.receive_updates, daemon=True).start()
-        
+        try:
+            self.client_socket.connect((HOST, PORT))
+            self.send_data("login", "teacher", "teacher")
+            threading.Thread(target=self.receive_updates, daemon=True).start()
+        except ConnectionRefusedError:
+            tk.messagebox.showerror("Connection Error", "Failed to connect to server. Make sure server is running.")
+            self.root.destroy()
+
     def send_data(self, action, username=None, status=None):
-        data = {"action": action, "username": username, "status": status}
-        self.client_socket.send(json.dumps(data).encode("utf-8"))
-        
+        try:
+            data = {"action": action, "username": username, "status": status}
+            self.client_socket.send(json.dumps(data).encode("utf-8"))
+        except (ConnectionError, OSError) as e:
+            tk.messagebox.showerror("Connection Error", f"Failed to send data: {e}")
+
     def receive_updates(self):
         while True:
             try:
@@ -72,7 +76,10 @@ class TeacherDashboard:
         self.send_data("refresh")
         
     def on_closing(self):
-        self.client_socket.close()
+        try:
+            self.client_socket.close()
+        except:
+            pass
         self.root.destroy()
 
 if __name__ == "__main__":
