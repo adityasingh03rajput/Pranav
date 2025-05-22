@@ -1,0 +1,278 @@
+
+import tkinter as tk
+from tkinter import messagebox
+import json
+import os
+import ctypes
+import subprocess
+import socket
+import threading
+import time
+from datetime import datetime
+
+# Configuration
+USER_FILE = "student_users.json"
+SERVER_IP = "YOUR_SERVER_PUBLIC_IP"  # Replace with your server's public IP
+SERVER_PORT = 65432
+AUTHORIZED_BSSID = "YOUR_AUTHORIZED_WIFI_BSSID"  # Replace with your classroom Wi-Fi's MAC address
+TIMER_DURATION = 300  # 5 minutes (300 seconds) for attendance
+
+class StudentClient:
+    def __init__(self):
+        # Initialize connection
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.connected = False
+        self.username = None
+        self.timer_running = False
+        self.time_remaining = TIMER_DURATION
+        
+        # Setup GUI
+        self.root = tk.Tk()
+        self.root.title("Student Attendance System")
+        self.setup_login_gui()
+        
+        # Start Wi-Fi monitoring thread
+        self.wifi_monitor_thread = threading.Thread(target=self.monitor_wifi, daemon=True)
+        self.wifi_monitor_thread.start()
+        
+        # Hide console window (Windows only)
+        if os.name == 'nt':
+            ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+        
+        self.root.mainloop()
+
+    def connect_to_server(self):
+        try:
+            self.client_socket.connect((SERVER_IP, SERVER_PORT))
+            self.connected = True
+            threading.Thread(target=self.receive_messages, daemon=True).start()
+            return True
+        except Exception as e:
+            messagebox.showerror("Connection Error", f"Failed to connect to server: {e}")
+            return False
+
+    def setup_login_gui(self):
+        self.root.geometry("350x250")
+        
+        # Main frame
+        self.main_frame = tk.Frame(self.root)
+        self.main_frame.pack(pady=20)
+        
+        # Title
+        tk.Label(self.main_frame, text="Student Portal", font=("Arial", 16)).grid(row=0, column=0, columnspan=2, pady=10)
+        
+        # Username
+        tk.Label(self.main_frame, text="Username:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+        self.entry_username = tk.Entry(self.main_frame)
+        self.entry_username.grid(row=1, column=1, padx=5, pady=5)
+        
+        # Password
+        tk.Label(self.main_frame, text="Password:").grid(row=2, column=0, sticky="e", padx=5, pady=5)
+        self.entry_password = tk.Entry(self.main_frame, show="*")
+        self.entry_password.grid(row=2, column=1, padx=5, pady=5)
+        
+        # Buttons
+        self.btn_frame = tk.Frame(self.main_frame)
+        self.btn_frame.grid(row=3, column=0, columnspan=2, pady=10)
+        
+        tk.Button(self.btn_frame, text="Login", command=self.login).pack(side="left", padx=5)
+        tk.Button(self.btn_frame, text="Sign Up", command=self.signup).pack(side="left", padx=5)
+        
+        # Status label
+        self.status_label = tk.Label(self.root, text="", fg="red")
+        self.status_label.pack(pady=5)
+
+    def setup_attendance_gui(self):
+        # Clear the window
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        
+        self.root.geometry("400x300")
+        
+        # Title
+        tk.Label(self.root, text="Attendance System", font=("Arial", 16)).pack(pady=10)
+        
+        # Instructions
+        tk.Label(self.root, 
+                text="Click 'Start Attendance' when you're in class.\nStay connected to the authorized Wi-Fi.",
+                wraplength=350).pack(pady=10)
+        
+        # Timer display
+        self.timer_label = tk.Label(self.root, text="", font=("Arial", 14))
+        self.timer_label.pack(pady=20)
+        
+        # Start button
+        self.start_btn = tk.Button(self.root, text="Start Attendance", 
+                                 command=self.start_attendance,
+                                 state=tk.NORMAL)
+        self.start_btn.pack(pady=10)
+        
+        # Status label
+        self.connection_status = tk.Label(self.root, text="", fg="blue")
+        self.connection_status.pack(pady=5)
+        
+        # Update connection status
+        self.update_connection_status()
+
+    def update_connection_status(self):
+        if self.check_wifi_connection():
+            status = "Connected to authorized Wi-Fi"
+            color = "green"
+        else:
+            status = "Not connected to authorized Wi-Fi"
+            color = "red"
+        
+        self.connection_status.config(text=status, fg=color)
+        self.root.after(1000, self.update_connection_status)
+
+    def check_wifi_connection(self):
+        try:
+            result = subprocess.run(["netsh", "wlan", "show", "interfaces"],
+                                   capture_output=True, text=True)
+            for line in result.stdout.splitlines():
+                if "BSSID" in line:
+                    bssid = ":".join(line.split(":")[1:]).strip().lower()
+                    return bssid == AUTHORIZED_BSSID.lower()
+        except Exception:
+            return False
+        return False
+
+    def monitor_wifi(self):
+        last_state = None
+        while True:
+            current_state = self.check_wifi_connection()
+            
+            if last_state is not None and current_state != last_state:
+                if self.username:  # Only send updates if logged in
+                    if current_state:
+                        self.send_to_server("wifi_reconnected", self.username, "present")
+                    else:
+                        self.send_to_server("wifi_disconnected", self.username, "absent")
+            
+            last_state = current_state
+            time.sleep(5)  # Check every 5 seconds
+
+    def send_to_server(self, action, username=None, status=None):
+        if not self.connected:
+            if not self.connect_to_server():
+                return False
+        
+        try:
+            data = {
+                "action": action,
+                "username": username,
+                "status": status
+            }
+            self.client_socket.send(json.dumps(data).encode("utf-8"))
+            return True
+        except Exception as e:
+            self.connected = False
+            self.status_label.config(text=f"Connection error: {str(e)}", fg="red")
+            return False
+
+    def receive_messages(self):
+        while self.connected:
+            try:
+                data = self.client_socket.recv(1024).decode("utf-8")
+                if not data:
+                    break
+                
+                message = json.loads(data)
+                # Handle server messages if needed
+                
+            except Exception:
+                self.connected = False
+                break
+
+    def login(self):
+        username = self.entry_username.get()
+        password = self.entry_password.get()
+        
+        if not username or not password:
+            messagebox.showwarning("Error", "Please enter both username and password")
+            return
+        
+        # Try to connect if not already connected
+        if not self.connected and not self.connect_to_server():
+            return
+        
+        # Check local credentials (for demo purposes)
+        users = self.load_users()
+        if username in users and users[username] == password:
+            self.username = username
+            self.send_to_server("login", username, "student")
+            self.setup_attendance_gui()
+        else:
+            messagebox.showerror("Error", "Invalid username or password")
+
+    def signup(self):
+        username = self.entry_username.get()
+        password = self.entry_password.get()
+        
+        if not username or not password:
+            messagebox.showwarning("Error", "Please enter both username and password")
+            return
+        
+        users = self.load_users()
+        if username in users:
+            messagebox.showerror("Error", "Username already exists")
+            return
+        
+        if not self.connected and not self.connect_to_server():
+            return
+        
+        # Send signup request to server
+        success = self.send_to_server("signup", username, password)
+        if success:
+            users[username] = password
+            self.save_users(users)
+            messagebox.showinfo("Success", "Account created successfully")
+        else:
+            messagebox.showerror("Error", "Failed to create account")
+
+    def load_users(self):
+        if os.path.exists(USER_FILE):
+            with open(USER_FILE, "r") as f:
+                return json.load(f)
+        return {}
+
+    def save_users(self, users):
+        with open(USER_FILE, "w") as f:
+            json.dump(users, f, indent=4)
+
+    def start_attendance(self):
+        if not self.check_wifi_connection():
+            messagebox.showwarning("Warning", "You must be connected to the authorized Wi-Fi to start attendance")
+            return
+        
+        self.timer_running = True
+        self.time_remaining = TIMER_DURATION
+        self.start_btn.config(state=tk.DISABLED)
+        self.send_to_server("start_attendance", self.username, "present")
+        self.update_timer()
+
+    def update_timer(self):
+        if self.timer_running:
+            mins, secs = divmod(self.time_remaining, 60)
+            timer_text = f"Time remaining: {mins:02d}:{secs:02d}"
+            self.timer_label.config(text=timer_text)
+            
+            if self.time_remaining > 0:
+                self.time_remaining -= 1
+                self.root.after(1000, self.update_timer)
+            else:
+                self.timer_running = False
+                self.timer_label.config(text="Attendance marked!", fg="green")
+                self.send_to_server("attendance_complete", self.username, "present")
+                messagebox.showinfo("Success", "Your attendance has been recorded")
+
+    def on_closing(self):
+        if self.connected:
+            if self.username:
+                self.send_to_server("logout", self.username, "absent")
+            self.client_socket.close()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    app = StudentClient()
+    app.root.protocol("WM_DELETE_WINDOW", app.on_closing)
